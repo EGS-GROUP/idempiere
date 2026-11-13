@@ -108,6 +108,14 @@ Este documento describe la arquitectura, decisiones de diseño, configuración p
 * **Causa:** El subdominio `registry.egssmart.com` tenía activado el Proxy de Cloudflare (Nube Naranja 🟧). Los planes Free/Pro de Cloudflare imponen un límite máximo de subida HTTP de 100 MB.
 * **Solución aplicada:** Se cambió el registro DNS en Cloudflare a **DNS Only (Nube Gris ☁️)** para que el tráfico binario del registry llegue directo al VPS sin atravesar el proxy CDN de Cloudflare. Dokploy/Traefik gestiona el certificado SSL vía Let's Encrypt de forma directa.
 
+### 2.8. Contexto de Agente en Stage 3 (`Attempted to execute a step that requires a node context`)
+* **Problema:** En el Stage 3 (`Desplegar en Dokploy (CD)`), la ejecución de `sh 'curl ...'` fallaba con:
+  ```text
+  ERROR: Attempted to execute a step that requires a node context while ‘agent none’ was specified.
+  ```
+* **Causa:** El pipeline declara `agent none` en la raíz. Si un stage ejecuta comandos de shell (`sh`), requiere explícitamente un nodo asignado.
+* **Solución aplicada:** Se especificó `agent any` dentro del Stage 3 junto a su cláusula `when`.
+
 ---
 
 ## 3. Estructura de Archivos del Flujo CI/CD
@@ -216,6 +224,24 @@ pipeline {
                         '''
                     }
                 }
+            }
+        }
+
+        stage('3. Desplegar en Dokploy (CD)') {
+            when {
+                anyOf {
+                    branch 'lunaerp-jenkins'
+                    branch 'main'
+                    branch 'release/*'
+                    expression { return env.BRANCH_NAME == null }
+                }
+            }
+            agent any
+            steps {
+                echo 'Notificando a Dokploy para descargar la nueva imagen y reiniciar...'
+                sh '''
+                    curl -s -X POST "https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df"
+                '''
             }
         }
     }
