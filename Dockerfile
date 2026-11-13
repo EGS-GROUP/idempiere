@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17-jre-jammy
+FROM eclipse-temurin:17-jdk-jammy
 
 ARG BUILD_NUMBER=local
 LABEL maintainer="EGS-GROUP <dev@egs-group.com>" \

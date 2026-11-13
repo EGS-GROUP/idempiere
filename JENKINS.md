@@ -116,6 +116,16 @@ Este documento describe la arquitectura, decisiones de diseño, configuración p
 * **Causa:** El pipeline declara `agent none` en la raíz. Si un stage ejecuta comandos de shell (`sh`), requiere explícitamente un nodo asignado.
 * **Solución aplicada:** Se especificó `agent any` dentro del Stage 3 junto a su cláusula `when`.
 
+### 2.9. Arquitectura ARM64 y Lanzador Java Puro (`cannot execute binary file: Exec format error`)
+* **Problema:** En servidores con procesadores ARM64 (ej. Oracle Ampere o AWS Graviton), el script `silent-setup.sh` fallaba con:
+  ```text
+  silent-setup.sh: line 9: ./idempiere: cannot execute binary file: Exec format error
+  ```
+* **Causa:** El archivo `./idempiere` es un ejecutable nativo en C compilado para x86_64. No puede ser ejecutado directamente en arquitecturas ARM64.
+* **Solución aplicada:**
+  - Se cambió a `silent-setup-alt.sh` en `docker-entrypoint.sh`, el cual invoca directamente `java -jar plugins/org.eclipse.equinox.launcher_*.jar` (bytecode Java 100% independiente de la arquitectura).
+  - Se migró la imagen base a `eclipse-temurin:17-jdk-jammy` para asegurar soporte nativo de la herramienta `jar`.
+
 ---
 
 ## 3. Estructura de Archivos del Flujo CI/CD
@@ -123,8 +133,8 @@ Este documento describe la arquitectura, decisiones de diseño, configuración p
 | Archivo | Función Principal |
 |---|---|
 | [`Jenkinsfile`](Jenkinsfile) | Orquestación declarativa del ciclo de vida (Build Maven/Tycho -> Empaquetado -> Docker Build -> Docker Push). |
-| [`Dockerfile`](Dockerfile) | Imagen final de producción basada en `eclipse-temurin:17-jre-jammy`, con usuario seguro `idempiere`, scripts con permisos de ejecución y puertos 8080/8443/12612 expuestos. |
-| [`docker-entrypoint.sh`](docker-entrypoint.sh) | Script de inicialización desatendido: espera a PostgreSQL, autogenera `idempiereEnv.properties`, corre `silent-setup.sh`, detecta e importa la semilla (Seed) o corre `RUN_SyncDB.sh` y lanza iDempiere. |
+| [`Dockerfile`](Dockerfile) | Imagen final de producción basada en `eclipse-temurin:17-jdk-jammy`, con usuario seguro `idempiere`, scripts con permisos de ejecución y puertos 8080/8443/12612 expuestos. |
+| [`docker-entrypoint.sh`](docker-entrypoint.sh) | Script de inicialización desatendido: espera a PostgreSQL, autogenera `idempiereEnv.properties`, corre `silent-setup-alt.sh` (compatible x86/ARM), detecta e importa la semilla (Seed) o corre `RUN_SyncDB.sh` y lanza iDempiere. |
 | [`.dockerignore`](.dockerignore) | Excluye el código fuente innecesario, admitiendo únicamente el binario generado por Tycho y el script `docker-entrypoint.sh`. |
 
 ---

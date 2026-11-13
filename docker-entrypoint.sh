@@ -69,8 +69,13 @@ ADEMPIERE_FTP_USER=anonymous
 ADEMPIERE_FTP_PASSWORD=user@host.com
 EOF
 
-    echo "Ejecutando silent-setup.sh para inicializar configuración y plantillas..."
-    bash "$IDEMPIERE_HOME/silent-setup.sh"
+    echo "Ejecutando silent-setup-alt.sh (modo Java puro / multi-arquitectura)..."
+    bash "$IDEMPIERE_HOME/silent-setup-alt.sh"
+    
+    if [ ! -f "$IDEMPIERE_HOME/utils/myEnvironment.sh" ]; then
+        echo "ERROR: Falló la generación de myEnvironment.sh en silent-setup-alt.sh"
+        exit 1
+    fi
     echo "Configuración generada exitosamente."
 fi
 
@@ -80,6 +85,13 @@ TABLE_COUNT=$(PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USE
 if [ "$TABLE_COUNT" = "0" ] || [ -z "$TABLE_COUNT" ]; then
     echo "Base de datos '$DB_NAME' vacía (0 tablas detectadas)."
     echo "Importando semilla oficial de iDempiere (Seed)..."
+    
+    # Extraer Adempiere_pg.jar si Adempiere_pg.dmp no existe aún
+    if [ -f "$IDEMPIERE_HOME/data/seed/Adempiere_pg.jar" ] && [ ! -f "$IDEMPIERE_HOME/data/seed/Adempiere_pg.dmp" ]; then
+        echo "Extrayendo Adempiere_pg.jar con unzip..."
+        unzip -o -q "$IDEMPIERE_HOME/data/seed/Adempiere_pg.jar" -d "$IDEMPIERE_HOME/data/seed" || true
+    fi
+
     cd "$IDEMPIERE_HOME/utils"
     echo "" | ./RUN_ImportIdempiere.sh
     echo "Semilla importada exitosamente."
