@@ -14,7 +14,7 @@ pipeline {
 
     environment {
         // Ajusta el nombre exacto del volumen creado por Dokploy (verifícalo con: docker volume ls)
-        MAVEN_CACHE_VOL = 'jenkins-idempiere_maven-repo'
+        MAVEN_CACHE_VOL = 'maven-m2-cache'
         // Límite de memoria estricta para Maven/Tycho (protege el VPS de 12 GB RAM)
         MAVEN_OPTS      = '-Xmx5g -Xms1g -XX:+UseG1GC -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn'
         // Configuración de la imagen Docker resultante
