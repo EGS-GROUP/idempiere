@@ -29,8 +29,8 @@ pipeline {
                 docker {
                     // Imagen multi-arquitectura (compatible con AMD64 y ARM64 Ampere de Oracle Cloud)
                     image 'maven:3.9.9-eclipse-temurin-17'
-                    // Monta la caché persistente .m2 dentro del daemon dind y mantiene el workspace sincronizado
-                    args "-v ${MAVEN_CACHE_VOL}:/root/.m2"
+                    // Monta el volumen de caché en /var/maven-repo para evitar conflictos de permisos con /root/.m2
+                    args "-v ${MAVEN_CACHE_VOL}:/var/maven-repo -e MAVEN_CONFIG=/var/maven-repo"
                     reuseNode true
                 }
             }
@@ -38,6 +38,7 @@ pipeline {
                 echo "Iniciando compilación Tycho para rama: ${env.BRANCH_NAME} (Build #${env.BUILD_NUMBER})"
                 sh '''
                     mvn clean verify \
+                        -Dmaven.repo.local=/var/maven-repo/repository \
                         -Dtycho.localArtifacts=ignore \
                         -Dmaven.test.skip=false \
                         --batch-mode \
