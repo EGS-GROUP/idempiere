@@ -1,2 +1,4 @@
 *
 !org.idempiere.p2/target/products/org.adempiere.server.product/linux/gtk/
+!docker-entrypoint.sh
+!docker-entrypoint.sh

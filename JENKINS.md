@@ -116,7 +116,8 @@ Este documento describe la arquitectura, decisiones de diseño, configuración p
 |---|---|
 | [`Jenkinsfile`](Jenkinsfile) | Orquestación declarativa del ciclo de vida (Build Maven/Tycho -> Empaquetado -> Docker Build -> Docker Push). |
 | [`Dockerfile`](Dockerfile) | Imagen final de producción basada en `eclipse-temurin:17-jre-jammy`, con usuario seguro `idempiere`, scripts con permisos de ejecución y puertos 8080/8443/12612 expuestos. |
-| [`.dockerignore`](.dockerignore) | Excluye todo el código fuente y artefactos temporales (`*`), admitiendo únicamente el binario generado en `!org.idempiere.p2/target/products/org.adempiere.server.product/linux/gtk/` para un contexto de build ligero y veloz. |
+| [`docker-entrypoint.sh`](docker-entrypoint.sh) | Script de inicialización desatendido: espera a PostgreSQL, autogenera `idempiereEnv.properties`, corre `silent-setup.sh`, detecta e importa la semilla (Seed) o corre `RUN_SyncDB.sh` y lanza iDempiere. |
+| [`.dockerignore`](.dockerignore) | Excluye el código fuente innecesario, admitiendo únicamente el binario generado por Tycho y el script `docker-entrypoint.sh`. |
 
 ---
 
@@ -307,8 +308,15 @@ services:
     depends_on:
       - db
     environment:
-      - IDEMPIERE_HOME=/opt/idempiere-server
-      - JAVA_OPTIONS=-Xms1g -Xmx3g -XX:+UseG1GC
+      - TZ=America/Bogota
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=idempiere
+      - DB_USER=adempiere
+      - DB_PASS=TuPasswordSeguro123
+      - DB_ADMIN_PASS=TuPasswordSeguro123
+      - MIGRATE_EXISTING_DATABASE=true
+      - JAVA_OPTS=-Xms1g -Xmx3g -XX:+UseG1GC
     volumes:
       - idempiere_app_data:/opt/idempiere-server/data
       - idempiere_app_log:/opt/idempiere-server/log
