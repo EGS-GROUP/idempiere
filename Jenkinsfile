@@ -1,24 +1,18 @@
 pipeline {
-    // Ejecutor 0 en Built-In Node: este pipeline delega cada stage a contenedores dentro de docker:dind
     agent none
 
     options {
-        // Conserva solo las últimas 10 ejecuciones para no saturar el disco del VPS
         buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
-        // Evita ejecuciones paralelas que compitan por los 2 vCPU y 8 GB libres
         disableConcurrentBuilds()
-        // Tiempo máximo de seguridad para compilaciones Tycho extensas
         timeout(time: 45, unit: 'MINUTES')
         timestamps()
     }
 
     environment {
-        // Ajusta el nombre exacto del volumen creado por Dokploy (verifícalo con: docker volume ls)
+        // Volumen interno creado dentro de jenkins-dind con permisos 1000:1000
         MAVEN_CACHE_VOL = 'maven-m2-cache'
-        // Límite de memoria estricta para Maven/Tycho (protege el VPS de 12 GB RAM)
         MAVEN_OPTS      = '-Xmx5g -Xms1g -XX:+UseG1GC -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn'
-        // Configuración de la imagen Docker resultante
-        DOCKER_REGISTRY = 'ghcr.io/tu-usuario' // O tu Docker Hub / Registry privado
+        DOCKER_REGISTRY = 'ghcr.io/tu-usuario'
         IMAGE_NAME      = 'idempiere-custom'
         IMAGE_TAG       = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
     }
@@ -27,9 +21,7 @@ pipeline {
         stage('1. Compilar y Empaquetar (Maven + Eclipse Tycho)') {
             agent {
                 docker {
-                    // Imagen multi-arquitectura (compatible con AMD64 y ARM64 Ampere de Oracle Cloud)
                     image 'maven:3.9.9-eclipse-temurin-17'
-                    // Monta el volumen de caché en /var/maven-repo para evitar conflictos de permisos con /root/.m2
                     args "-v ${MAVEN_CACHE_VOL}:/var/maven-repo -e MAVEN_CONFIG=/var/maven-repo"
                     reuseNode true
                 }
@@ -47,7 +39,6 @@ pipeline {
             }
             post {
                 success {
-                    // Archiva el JAR del plugin o el ZIP/tar.gz del producto P2 generado por Tycho
                     archiveArtifacts artifacts: '**/target/*.jar, **/target/products/*.zip, **/target/products/*.tar.gz',
                                      allowEmptyArchive: true,
                                      fingerprint: true
@@ -56,7 +47,6 @@ pipeline {
         }
 
         stage('2. Construir y Publicar Imagen Docker') {
-            // Solo construye imagen final en ramas principales (main o release)
             when {
                 anyOf {
                     branch 'main'
@@ -66,17 +56,15 @@ pipeline {
             }
             agent {
                 docker {
-                    // Usa el CLI de Docker dentro de dind conectado al daemon aislado por TLS
                     image 'docker:27-cli'
-                    args '-e DOCKER_HOST=tcp://docker:2376 -e DOCKER_CERT_PATH=/certs/client -e DOCKER_TLS_VERIFY=1 -v jenkins-idempiere_jenkins-docker-certs:/certs/client:ro'
+                    // Se conecta al socket interno de jenkins-dind (ya aislado del VPS host)
+                    args '-v /var/run/docker.sock:/var/run/docker.sock'
                     reuseNode true
                 }
             }
             steps {
                 script {
                     echo "Construyendo imagen ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
-                    
-                    // Construye la imagen tomando el Dockerfile de tu proyecto iDempiere
                     sh """
                         docker build \
                             --build-arg BUILD_NUMBER=${env.BUILD_NUMBER} \
@@ -85,7 +73,6 @@ pipeline {
                             .
                     """
 
-                    // Publicar en el registro (requiere credencial 'docker-registry-creds' en Jenkins)
                     withCredentials([usernamePassword(
                         credentialsId: 'docker-registry-creds',
                         usernameVariable: 'REG_USER',
@@ -103,12 +90,6 @@ pipeline {
     }
 
     post {
-        always {
-            // Limpia imágenes huérfanas (dangling) dentro de dind sin tocar las capas base ni el volumen .m2
-            script {
-                echo 'Ejecutando limpieza de imágenes intermedias en el daemon dind...'
-            }
-        }
         success {
             echo "Pipeline finalizado exitosamente: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
         }
