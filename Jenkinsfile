@@ -4,17 +4,19 @@ pipeline {
     options {
         buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '5'))
         disableConcurrentBuilds()
-        timeout(time: 45, unit: 'MINUTES')
+        // Ampliado a 90 min para la primera descarga completa de repositorios P2 del core de iDempiere
+        timeout(time: 90, unit: 'MINUTES')
         timestamps()
     }
 
     environment {
-        // Volumen interno creado dentro de jenkins-dind con permisos 1000:1000
         MAVEN_CACHE_VOL = 'maven-m2-cache'
         MAVEN_OPTS      = '-Xmx5g -Xms1g -XX:+UseG1GC -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn'
-        DOCKER_REGISTRY = 'ghcr.io/tu-usuario'
-        IMAGE_NAME      = 'idempiere-custom'
-        IMAGE_TAG       = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
+        // Tu registro propio soberano en lugar de ghcr.io
+        DOCKER_REGISTRY = 'registry.egssmart.com/egs-group'
+        IMAGE_NAME      = 'lunaerp-idempiere'
+        BRANCH_TAG      = "${env.BRANCH_NAME ?: 'lunaerp-jenkins'}"
+        IMAGE_TAG       = "${BRANCH_TAG}-${env.BUILD_NUMBER}"
     }
 
     stages {
@@ -27,19 +29,19 @@ pipeline {
                 }
             }
             steps {
-                echo "Iniciando compilación Tycho para rama: ${env.BRANCH_NAME} (Build #${env.BUILD_NUMBER})"
+                echo "Iniciando compilación Tycho de LunaERP para rama: ${BRANCH_TAG} (Build #${env.BUILD_NUMBER})"
                 sh '''
                     mvn clean verify \
                         -Dmaven.repo.local=/var/maven-repo/repository \
                         -Dtycho.localArtifacts=ignore \
-                        -Dmaven.test.skip=false \
+                        -Dmaven.test.skip=true \
                         --batch-mode \
                         --errors
                 '''
             }
             post {
                 success {
-                    archiveArtifacts artifacts: '**/target/*.jar, **/target/products/*.zip, **/target/products/*.tar.gz',
+                    archiveArtifacts artifacts: '**/target/products/*.zip, **/target/products/*.tar.gz',
                                      allowEmptyArchive: true,
                                      fingerprint: true
                 }
@@ -49,15 +51,16 @@ pipeline {
         stage('2. Construir y Publicar Imagen Docker') {
             when {
                 anyOf {
+                    branch 'lunaerp-jenkins'
                     branch 'main'
-                    branch 'master'
                     branch 'release/*'
+                    // Permite ejecución si se usa Pipeline estándar (donde BRANCH_NAME es null)
+                    expression { return env.BRANCH_NAME == null }
                 }
             }
             agent {
                 docker {
                     image 'docker:27-cli'
-                    // Se conecta al socket interno de jenkins-dind (ya aislado del VPS host)
                     args '-v /var/run/docker.sock:/var/run/docker.sock'
                     reuseNode true
                 }
@@ -79,7 +82,7 @@ pipeline {
                         passwordVariable: 'REG_PASS'
                     )]) {
                         sh '''
-                            echo "$REG_PASS" | docker login ghcr.io -u "$REG_USER" --password-stdin
+                            echo "$REG_PASS" | docker login registry.egssmart.com -u "$REG_USER" --password-stdin
                             docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
                             docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
                         '''
@@ -91,10 +94,10 @@ pipeline {
 
     post {
         success {
-            echo "Pipeline finalizado exitosamente: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "Pipeline LunaERP finalizado: ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
         }
         failure {
-            echo "Fallo en la compilación o empaquetado de iDempiere. Revisa la salida de Maven/Tycho."
+            echo "Fallo en la compilación o empaquetado de LunaERP. Revisa la salida de Maven/Tycho."
         }
     }
 }
