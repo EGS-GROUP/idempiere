@@ -61,7 +61,7 @@ pipeline {
             agent {
                 docker {
                     image 'docker:27-cli'
-                    args '-v /var/run/docker.sock:/var/run/docker.sock'
+                    args '-u 0:0 -v /var/run/docker.sock:/var/run/docker.sock -e DOCKER_CONFIG=/tmp/.docker -e HOME=/tmp'
                     reuseNode true
                 }
             }
