@@ -90,6 +90,14 @@ pipeline {
                 }
             }
         }
+        stage('3. Desplegar en Dokploy (CD)') {
+         steps {
+             echo 'Notificando a Dokploy para descargar la nueva imagen y reiniciar...'
+             sh '''
+                 curl -s -X POST "https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df"
+             '''
+            }
+        }
     }
 
     post {

@@ -99,6 +99,15 @@ Este documento describe la arquitectura, decisiones de diseño, configuración p
   args '-u 0:0 -v /var/run/docker.sock:/var/run/docker.sock -e DOCKER_CONFIG=/tmp/.docker -e HOME=/tmp'
   ```
 
+### 2.7. Bloqueo 413 de Cloudflare en Docker Push (`413 Payload Too Large`)
+* **Problema:** Al hacer `docker push` hacia `registry.egssmart.com`, las capas pesadas (>100 MB, runtime Java y binarios iDempiere) fallaban con:
+  ```html
+  <title>413 Payload Too Large</title>
+  <center>cloudflare</center>
+  ```
+* **Causa:** El subdominio `registry.egssmart.com` tenía activado el Proxy de Cloudflare (Nube Naranja 🟧). Los planes Free/Pro de Cloudflare imponen un límite máximo de subida HTTP de 100 MB.
+* **Solución aplicada:** Se cambió el registro DNS en Cloudflare a **DNS Only (Nube Gris ☁️)** para que el tráfico binario del registry llegue directo al VPS sin atravesar el proxy CDN de Cloudflare. Dokploy/Traefik gestiona el certificado SSL vía Let's Encrypt de forma directa.
+
 ---
 
 ## 3. Estructura de Archivos del Flujo CI/CD
@@ -251,6 +260,97 @@ Conforme avancemos en la automatización, este documento incorporará las siguie
 - [x] **Fase 1:** Compilación y empaquetado headless con Tycho + Caché `.m2` persistente.
 - [x] **Fase 2:** Construcción de imagen Docker no-root y publicación en Registro Soberano.
 - [ ] **Fase 3:** Ejecución de migraciones automáticas de base de datos (`RUN_SyncDBDev.sh` / iDempiere migrations).
-- [ ] **Fase 4:** Despliegue continuo (CD) automático en entorno Staging / QA (Dokploy webhook / compose restart).
+- [x] **Fase 4:** Configuración para despliegue continuo (CD) en Dokploy mediante Webhook.
 - [ ] **Fase 5:** Notificaciones automáticas a Telegram / Slack / Discord sobre el estado del build.
+
+---
+
+## 7. Despliegue en el Servidor Destino con Dokploy (Paso a Paso)
+
+Para poner en marcha la imagen `registry.egssmart.com/egs-group/lunaerp-idempiere:latest` en otro servidor administrado por Dokploy, se requieren 4 pasos fundamentales:
+
+### Paso 1: Autenticar el Registry Privado en el Dokploy Destino
+Dado que tu imagen reside en un registro privado soberano:
+1. En el Dokploy del servidor destino, dirígete a **Settings** (o **Configuración**) -> **Docker Registries**.
+2. Añade un nuevo registro:
+   - **Registry Name:** `EGSSmart Registry`
+   - **Registry URL:** `registry.egssmart.com`
+   - **Username:** `admin_egs` (o usuario con permiso de lectura `pull`)
+   - **Password:** Contraseña o Token del registro
+3. Guarda el registro para que Dokploy pueda hacer `docker pull` sin errores de autenticación.
+
+### Paso 2: Crear el Proyecto / Aplicación en Dokploy
+Tienes dos opciones en Dokploy:
+- **Opción A (Recomendada - Docker Compose Stack):** Despliega iDempiere junto con su base de datos PostgreSQL en una red interna aislada.
+- **Opción B (Aplicación Docker individual):** Conecta iDempiere a un servidor PostgreSQL ya existente.
+
+#### Stack Docker Compose de Ejemplo (Opción A):
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: idempiere
+      POSTGRES_USER: adempiere
+      POSTGRES_PASSWORD: TuPasswordSeguro123
+    volumes:
+      - idempiere_db_data:/var/lib/postgresql/data
+    networks:
+      - idempiere_net
+
+  app:
+    image: registry.egssmart.com/egs-group/lunaerp-idempiere:latest
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - IDEMPIERE_HOME=/opt/idempiere-server
+      - JAVA_OPTIONS=-Xms1g -Xmx3g -XX:+UseG1GC
+    volumes:
+      - idempiere_app_data:/opt/idempiere-server/data
+      - idempiere_app_log:/opt/idempiere-server/log
+    networks:
+      - idempiere_net
+
+volumes:
+  idempiere_db_data:
+  idempiere_app_data:
+  idempiere_app_log:
+
+networks:
+  idempiere_net:
+    driver: bridge
+```
+
+### Paso 3: Configurar el Dominio y SSL en Dokploy
+1. En la pestaña **Domains** de la aplicación en Dokploy:
+   - Asigna tu subdominio (ejemplo: `erp.egssmart.com` o `luna.egssmart.com`).
+   - Apunta al puerto interno del contenedor: **`8080`**.
+   - Dokploy con Traefik generará automáticamente el certificado Let's Encrypt HTTPS.
+
+### Paso 4: Automatizar el Despliegue desde Jenkins (Continuous Deployment)
+Dokploy genera una **URL de Despliegue por Webhook** para cada aplicación:
+1. En Dokploy, ve a tu aplicación -> pestaña **General** / **Deployments** y copia la URL del **Webhook** (ejemplo: `https://dokploy.tuservidor.com/api/deploy/webhook/abc-123-xyz`).
+2. En Jenkins, agrega un Stage al final del `Jenkinsfile`:
+   ```groovy
+        stage('3. Desplegar en Dokploy (CD)') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'lunaerp-jenkins'
+                    expression { return env.BRANCH_NAME == null }
+                }
+            }
+            steps {
+                echo 'Notificando a Dokploy para descargar la nueva imagen y reiniciar...'
+                sh '''
+                    curl -s -X POST "https://dokploy.tuservidor.com/api/deploy/webhook/TU_WEBHOOK_AQUI"
+                '''
+            }
+        }
+   ```
+Cada vez que Jenkins compile y suba una nueva imagen `:latest`, llamará al Webhook de Dokploy y el servidor destino se actualizará automáticamente sin intervención manual.
 
