@@ -15,7 +15,8 @@ pipeline {
         // Tu registro propio soberano en lugar de ghcr.io
         DOCKER_REGISTRY = 'registry.egssmart.com/egs-group'
         IMAGE_NAME      = 'lunaerp-idempiere'
-        BRANCH_TAG      = "${env.BRANCH_NAME ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replace('origin/', '') : 'lunaerp-jenkins')}"
+        // Detección automática multi-entorno (soporta Multibranch, Git SCM y Jobs estándar nombrados *QA*)
+        BRANCH_TAG      = "${env.BRANCH_NAME ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replace('origin/', '') : (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa') ? 'lunaerpqa-jenkins' : 'lunaerp-jenkins'))}"
         IMAGE_TAG       = "${BRANCH_TAG}-${env.BUILD_NUMBER}"
     }
 
@@ -68,8 +69,12 @@ pipeline {
             }
             steps {
                 script {
-                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa'))
+                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa') || (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa')))
                     def floatTag = isQA ? 'qa' : 'latest'
+
+                    echo "=========================================================="
+                    echo "Job: ${env.JOB_NAME} | Rama: ${BRANCH_TAG} | Es QA: ${isQA} | Tag Flotante: :${floatTag}"
+                    echo "=========================================================="
 
                     echo "Construyendo imagen ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} (Tag flotante: :${floatTag})"
                     sh """
@@ -107,7 +112,7 @@ pipeline {
             agent any
             steps {
                 script {
-                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa'))
+                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa') || (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa')))
                     def webhookUrl = isQA ? 'https://deploylunaerpqa.egssmart.com/api/deploy/compose/ehOgII7lsVvaM_EyAE2cn'
                                           : 'https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df'
                     def envName = isQA ? 'QA (deploylunaerpqa)' : 'Producción/Staging (deploylunaerp)'
