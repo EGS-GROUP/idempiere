@@ -15,7 +15,7 @@ pipeline {
         // Tu registro propio soberano en lugar de ghcr.io
         DOCKER_REGISTRY = 'registry.egssmart.com/egs-group'
         IMAGE_NAME      = 'lunaerp-idempiere'
-        BRANCH_TAG      = "${env.BRANCH_NAME ?: 'lunaerp-jenkins'}"
+        BRANCH_TAG      = "${env.BRANCH_NAME ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replace('origin/', '') : 'lunaerp-jenkins')}"
         IMAGE_TAG       = "${BRANCH_TAG}-${env.BUILD_NUMBER}"
     }
 
@@ -52,6 +52,7 @@ pipeline {
             when {
                 anyOf {
                     branch 'lunaerp-jenkins'
+                    branch 'lunaerpqa-jenkins'
                     branch 'main'
                     branch 'release/*'
                     // Permite ejecución si se usa Pipeline estándar (donde BRANCH_NAME es null)
@@ -67,12 +68,15 @@ pipeline {
             }
             steps {
                 script {
-                    echo "Construyendo imagen ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa'))
+                    def floatTag = isQA ? 'qa' : 'latest'
+
+                    echo "Construyendo imagen ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} (Tag flotante: :${floatTag})"
                     sh """
                         docker build \
                             --build-arg BUILD_NUMBER=${env.BUILD_NUMBER} \
                             -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} \
-                            -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest \
+                            -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${floatTag} \
                             .
                     """
 
@@ -81,11 +85,11 @@ pipeline {
                         usernameVariable: 'REG_USER',
                         passwordVariable: 'REG_PASS'
                     )]) {
-                        sh '''
-                            echo "$REG_PASS" | docker login registry.egssmart.com -u "$REG_USER" --password-stdin
+                        sh """
+                            echo "\$REG_PASS" | docker login registry.egssmart.com -u "\$REG_USER" --password-stdin
                             docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
-                        '''
+                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${floatTag}
+                        """
                     }
                 }
             }
@@ -94,6 +98,7 @@ pipeline {
             when {
                 anyOf {
                     branch 'lunaerp-jenkins'
+                    branch 'lunaerpqa-jenkins'
                     branch 'main'
                     branch 'release/*'
                     expression { return env.BRANCH_NAME == null }
@@ -101,10 +106,15 @@ pipeline {
             }
             agent any
             steps {
-                echo 'Notificando a Dokploy para descargar la nueva imagen y reiniciar...'
-                sh '''
-                    curl -s -X POST "https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df"
-                '''
+                script {
+                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa'))
+                    def webhookUrl = isQA ? 'https://deploylunaerpqa.egssmart.com/api/deploy/compose/ehOgII7lsVvaM_EyAE2cn'
+                                          : 'https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df'
+                    def envName = isQA ? 'QA (deploylunaerpqa)' : 'Producción/Staging (deploylunaerp)'
+
+                    echo "Notificando a Dokploy ${envName} para descargar nueva imagen (${isQA ? ':qa' : ':latest'}) y reiniciar..."
+                    sh "curl -s -X POST '${webhookUrl}'"
+                }
             }
         }
     }

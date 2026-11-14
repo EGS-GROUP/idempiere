@@ -398,3 +398,80 @@ Dokploy genera una **URL de Despliegue por Webhook** para cada aplicación:
    ```
 Cada vez que Jenkins compile y suba una nueva imagen `:latest`, llamará al Webhook de Dokploy y el servidor destino se actualizará automáticamente sin intervención manual.
 
+---
+
+## 8. Estrategia Multi-Entorno y Soporte de QA (`lunaerpqa-jenkins` vs `lunaerp-jenkins`)
+
+El pipeline está diseñado para gestionar de forma dinámica múltiples entornos (Producción/Staging y QA) con un único `Jenkinsfile` inteligente, evitando duplicación de código.
+
+### 8.1. Matriz de Entornos
+
+| Entorno | Rama Git | Tag Inmutable | Tag Flotante | Webhook Dokploy |
+|---|---|---|---|---|
+| **Staging / Prod** | `lunaerp-jenkins` / `main` | `lunaerp-jenkins-${BUILD_NUMBER}` | `latest` | `https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df` |
+| **QA** | `lunaerpqa-jenkins` | `lunaerpqa-jenkins-${BUILD_NUMBER}` | `qa` | `https://deploylunaerpqa.egssmart.com/api/deploy/compose/ehOgII7lsVvaM_EyAE2cn` |
+
+### 8.2. Docker Compose para el Servidor Dokploy QA
+
+En el servidor Dokploy de QA (`deploylunaerpqa.egssmart.com`), el `docker-compose.yml` utiliza la imagen con tag `:qa`:
+
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: idempiere_qa
+      POSTGRES_USER: adempiere
+      POSTGRES_PASSWORD: TuPasswordSeguroQA123
+    volumes:
+      - idempiere_qa_db_data:/var/lib/postgresql/data
+    networks:
+      - idempiere_qa_net
+
+  app:
+    image: registry.egssmart.com/egs-group/lunaerp-idempiere:qa
+    pull_policy: always
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - TZ=America/Bogota
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=idempiere_qa
+      - DB_USER=adempiere
+      - DB_PASS=TuPasswordSeguroQA123
+      - DB_ADMIN_PASS=TuPasswordSeguroQA123
+      - MIGRATE_EXISTING_DATABASE=true
+      - JAVA_OPTS=-Xms1g -Xmx3g -XX:+UseG1GC
+    volumes:
+      - idempiere_qa_app_data:/opt/idempiere-server/data
+      - idempiere_qa_app_log:/opt/idempiere-server/log
+    networks:
+      - idempiere_qa_net
+
+volumes:
+  idempiere_qa_db_data:
+  idempiere_qa_app_data:
+  idempiere_qa_app_log:
+
+networks:
+  idempiere_qa_net:
+    driver: bridge
+```
+
+### 8.3. Configuración en Jenkins para QA
+
+Existen dos maneras de gestionar ambas ramas en Jenkins:
+
+1. **Opción A (Recomendada): Multibranch Pipeline en Jenkins**
+   - Si tu proyecto en Jenkins es un *Multibranch Pipeline*, haz clic en **Scan Multibranch Pipeline Now**.
+   - Jenkins descubrirá automáticamente la rama `lunaerpqa-jenkins` (una vez que contenga el `Jenkinsfile`) y creará el job hijo automáticamente.
+2. **Opción B: Job Dedicado para QA**
+   - Si usas un proyecto Pipeline estándar, crea un nuevo Item -> tipo **Pipeline** llamado `LunaERP-QA`.
+   - En *Pipeline definition from SCM*, configura el repositorio `https://github.com/EGS-GROUP/idempiere.git` y especifica la rama `*/lunaerpqa-jenkins`.
+   - Comparte el mismo volumen `maven-m2-cache`, lo cual permite que QA se compile en minutos aprovechando los artefactos P2 descargados.
+
