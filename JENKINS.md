@@ -126,6 +126,15 @@ Este documento describe la arquitectura, decisiones de diseño, configuración p
   - Se cambió a `silent-setup-alt.sh` en `docker-entrypoint.sh`, el cual invoca directamente `java -jar plugins/org.eclipse.equinox.launcher_*.jar` (bytecode Java 100% independiente de la arquitectura).
   - Se migró la imagen base a `eclipse-temurin:17-jdk-jammy` para asegurar soporte nativo de la herramienta `jar`.
 
+### 2.10. Detección de Entorno QA en Pipelines Estándar (`JOB_NAME` vs `BRANCH_NAME`)
+* **Problema:** En tareas de Jenkins de tipo *Pipeline* estándar (no *Multibranch*), aunque se configure la rama `*/lunaerpqa-jenkins` en la sección Git, el pipeline generaba el tag `:latest` en vez de `:qa` y llamaba al webhook de producción.
+* **Causa:** En pipelines estándar, `env.BRANCH_NAME` es `null`, y `env.GIT_BRANCH` aún no se encuentra inicializado cuando Jenkins procesa la directiva `environment { ... }`. Por ende, la variable caía siempre en el fallback `'lunaerp-jenkins'`.
+* **Solución aplicada:** Se aprovechó la variable de entorno nativa `env.JOB_NAME` (la cual siempre existe desde el inicio del job, ej. `LunaERP-QA`) como criterio de evaluación:
+  ```groovy
+  BRANCH_TAG = "${env.BRANCH_NAME ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replace('origin/', '') : (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa') ? 'lunaerpqa-jenkins' : 'lunaerp-jenkins'))}"
+  ```
+  De esta forma, cualquier tarea que contenga `qa` en su nombre o apunte a la rama QA será identificada inequívocamente como entorno QA.
+
 ---
 
 ## 3. Estructura de Archivos del Flujo CI/CD
@@ -161,7 +170,8 @@ pipeline {
         // Tu registro propio soberano en lugar de ghcr.io
         DOCKER_REGISTRY = 'registry.egssmart.com/egs-group'
         IMAGE_NAME      = 'lunaerp-idempiere'
-        BRANCH_TAG      = "${env.BRANCH_NAME ?: 'lunaerp-jenkins'}"
+        // Detección automática multi-entorno (soporta Multibranch, Git SCM y Jobs estándar nombrados *QA*)
+        BRANCH_TAG      = "${env.BRANCH_NAME ?: (env.GIT_BRANCH ? env.GIT_BRANCH.replace('origin/', '') : (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa') ? 'lunaerpqa-jenkins' : 'lunaerp-jenkins'))}"
         IMAGE_TAG       = "${BRANCH_TAG}-${env.BUILD_NUMBER}"
     }
 
@@ -198,6 +208,7 @@ pipeline {
             when {
                 anyOf {
                     branch 'lunaerp-jenkins'
+                    branch 'lunaerpqa-jenkins'
                     branch 'main'
                     branch 'release/*'
                     // Permite ejecución si se usa Pipeline estándar (donde BRANCH_NAME es null)
@@ -213,12 +224,19 @@ pipeline {
             }
             steps {
                 script {
-                    echo "Construyendo imagen ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa') || (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa')))
+                    def floatTag = isQA ? 'qa' : 'latest'
+
+                    echo "=========================================================="
+                    echo "Job: ${env.JOB_NAME} | Rama: ${BRANCH_TAG} | Es QA: ${isQA} | Tag Flotante: :${floatTag}"
+                    echo "=========================================================="
+
+                    echo "Construyendo imagen ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} (Tag flotante: :${floatTag})"
                     sh """
                         docker build \
                             --build-arg BUILD_NUMBER=${env.BUILD_NUMBER} \
                             -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} \
-                            -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest \
+                            -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${floatTag} \
                             .
                     """
 
@@ -227,11 +245,11 @@ pipeline {
                         usernameVariable: 'REG_USER',
                         passwordVariable: 'REG_PASS'
                     )]) {
-                        sh '''
-                            echo "$REG_PASS" | docker login registry.egssmart.com -u "$REG_USER" --password-stdin
+                        sh """
+                            echo "\$REG_PASS" | docker login registry.egssmart.com -u "\$REG_USER" --password-stdin
                             docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
-                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:latest
-                        '''
+                            docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${floatTag}
+                        """
                     }
                 }
             }
@@ -241,6 +259,7 @@ pipeline {
             when {
                 anyOf {
                     branch 'lunaerp-jenkins'
+                    branch 'lunaerpqa-jenkins'
                     branch 'main'
                     branch 'release/*'
                     expression { return env.BRANCH_NAME == null }
@@ -248,10 +267,15 @@ pipeline {
             }
             agent any
             steps {
-                echo 'Notificando a Dokploy para descargar la nueva imagen y reiniciar...'
-                sh '''
-                    curl -s -X POST "https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df"
-                '''
+                script {
+                    def isQA = (BRANCH_TAG == 'lunaerpqa-jenkins' || BRANCH_TAG.contains('qa') || (env.JOB_NAME && env.JOB_NAME.toLowerCase().contains('qa')))
+                    def webhookUrl = isQA ? 'https://deploylunaerpqa.egssmart.com/api/deploy/compose/ehOgII7lsVvaM_EyAE2cn'
+                                          : 'https://deploylunaerp.egssmart.com/api/deploy/compose/DpdJbmbdBswM92kMsW3df'
+                    def envName = isQA ? 'QA (deploylunaerpqa)' : 'Producción/Staging (deploylunaerp)'
+
+                    echo "Notificando a Dokploy ${envName} para descargar nueva imagen (${isQA ? ':qa' : ':latest'}) y reiniciar..."
+                    sh "curl -s -X POST '${webhookUrl}'"
+                }
             }
         }
     }
@@ -474,4 +498,39 @@ Existen dos maneras de gestionar ambas ramas en Jenkins:
    - Si usas un proyecto Pipeline estándar, crea un nuevo Item -> tipo **Pipeline** llamado `LunaERP-QA`.
    - En *Pipeline definition from SCM*, configura el repositorio `https://github.com/EGS-GROUP/idempiere.git` y especifica la rama `*/lunaerpqa-jenkins`.
    - Comparte el mismo volumen `maven-m2-cache`, lo cual permite que QA se compile en minutos aprovechando los artefactos P2 descargados.
+
+---
+
+### 8.4. Diagnóstico y Consulta del Registro Soberano vía API HTTP v2
+
+Para verificar qué imágenes y etiquetas están publicadas en el registro privado sin depender de la UI:
+
+#### A. Listar los repositorios existentes (Catálogo):
+```bash
+curl -u admin_egs:PASSWORD https://registry.egssmart.com/v2/_catalog
+```
+
+#### B. Listar los tags disponibles de LunaERP:
+```bash
+curl -u admin_egs:PASSWORD https://registry.egssmart.com/v2/egs-group/lunaerp-idempiere/tags/list
+```
+*Respuesta esperada tras compilar ambas ramas:*
+```json
+{
+  "name": "egs-group/lunaerp-idempiere",
+  "tags": [
+    "latest",
+    "qa",
+    "lunaerp-jenkins-7",
+    "lunaerpqa-jenkins-1"
+  ]
+}
+```
+
+#### C. Consultar el Manifiesto de un Tag específico (ej. `:qa`):
+```bash
+curl -u admin_egs:PASSWORD \
+  -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+  https://registry.egssmart.com/v2/egs-group/lunaerp-idempiere/manifests/qa
+```
 
