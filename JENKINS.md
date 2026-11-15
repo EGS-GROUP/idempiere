@@ -534,3 +534,132 @@ curl -u admin_egs:PASSWORD \
   https://registry.egssmart.com/v2/egs-group/lunaerp-idempiere/manifests/qa
 ```
 
+---
+
+## 9. Compilación y Despliegue de Plugins OSGi (Plugin REST API)
+
+Para extender LunaERP con plugins (por ejemplo, `idempiere-rest`), se implementa una estrategia de compilación ligada a las dependencias P2 del core y un despliegue en caliente vía Apache Felix Web Console.
+
+### 9.1. El Desafío de Dependencias P2 en Plugins de iDempiere
+Los plugins de iDempiere utilizan **Eclipse Tycho** para resolver bundles OSGi (`org.adempiere.base`, etc.). En los proyectos estándar, el archivo `pom.xml` busca el repositorio P2 en una ruta relativa:
+`file:///${basedir}/../../iDempiere/org.idempiere.p2/target/repository`
+
+En Jenkins, cada tarea corre en un workspace aislado (`/var/jenkins_home/workspace/LunaERP-Plugin-REST`), lo que provoca el error:
+```text
+[ERROR] Failed to load p2 repository with ID 'idempiere-core' from location:
+file:////var/jenkins_home/workspace/LunaERP-Plugin-REST/.../../../iDempiere/org.idempiere.p2/target/repository: No repository found
+```
+
+### 9.2. Arquitectura de Resolución de Dependencias en el Pipeline del Plugin
+Para resolverlo sin descargar gigabytes de internet, el pipeline del plugin:
+1. **Detección Local Inteligente:** En el Stage 1 (`agent any`), busca si en el disco del host ya existe el repositorio P2 generado previamente por las tareas del core (`LunaERP-QA` o `lunaerp-build`).
+2. **Copia a Workspace:** Si existe, copia los metadatos P2 (`artifacts.jar`, `content.jar`, `plugins/`, `features/`) dentro de `${WORKSPACE}/p2-core-repo`.
+3. **Fallback Oficial:** Si no se encuentra localmente, conmuta automáticamente a la URL remota oficial (`https://jenkins.idempiere.org/job/iDempiere12/ws/org.idempiere.p2/target/repository/`).
+4. **Inyección en Maven:** Pasa la propiedad `-Didempiere.core.repository.url="${P2_URL}"`.
+5. **Caché Compartida:** Monta el volumen `-v maven-m2-cache:/var/maven-repo` con `-Dmaven.repo.local=/var/maven-repo/repository`.
+6. **Publicación del Artefacto:** Archiva el archivo `.jar` resultante para su descarga directa.
+
+### 9.3. Definición del Pipeline para Jenkins (`LunaERP-Plugin-REST`)
+
+```groovy
+pipeline {
+    agent none
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+    }
+
+    stages {
+        stage('1. Preparar Código y Dependencias P2') {
+            agent any
+            steps {
+                git branch: 'lunaerp-rest', url: 'https://github.com/EGS-GROUP/idempiere-rest.git'
+
+                script {
+                    echo "Preparando el repositorio P2 de iDempiere Core..."
+                    sh '''
+                        rm -rf p2-core-repo
+                        mkdir -p p2-core-repo
+
+                        # Buscar P2 local compilado en workspaces de Jenkins
+                        LOCAL_P2=""
+                        if [ -d "/var/jenkins_home/workspace/LunaERP-QA/org.idempiere.p2/target/repository" ]; then
+                            LOCAL_P2="/var/jenkins_home/workspace/LunaERP-QA/org.idempiere.p2/target/repository"
+                        elif [ -d "/var/jenkins_home/workspace/lunaerp-build/org.idempiere.p2/target/repository" ]; then
+                            LOCAL_P2="/var/jenkins_home/workspace/lunaerp-build/org.idempiere.p2/target/repository"
+                        fi
+
+                        if [ -n "$LOCAL_P2" ]; then
+                            echo "===> Copiando P2 local desde: $LOCAL_P2"
+                            cp -r "$LOCAL_P2"/* p2-core-repo/
+                            echo "P2_URL=file://${WORKSPACE}/p2-core-repo" > p2_source.env
+                        else
+                            echo "===> No se encontró P2 local en el workspace. Usando fallback remoto oficial de iDempiere 12..."
+                            echo "P2_URL=https://jenkins.idempiere.org/job/iDempiere12/ws/org.idempiere.p2/target/repository/" > p2_source.env
+                        fi
+                    '''
+                }
+            }
+        }
+
+        stage('2. Compilar Plugin REST') {
+            agent {
+                docker {
+                    image 'maven:3.9-eclipse-temurin-17'
+                    args '-u 0:0 -v maven-m2-cache:/var/maven-repo'
+                }
+            }
+            steps {
+                script {
+                    sh '''
+                        P2_URL=$(grep P2_URL p2_source.env | cut -d '=' -f2-)
+                        echo "Compilando plugin apuntando a P2: $P2_URL"
+
+                        mvn clean verify \
+                            -Dmaven.repo.local=/var/maven-repo/repository \
+                            -Didempiere.core.repository.url="${P2_URL}" \
+                            -Dtycho.localArtifacts=ignore \
+                            -Dmaven.test.skip=true \
+                            --batch-mode --errors
+                    '''
+                }
+            }
+        }
+
+        stage('3. Publicar Artefactos (.jar)') {
+            agent any
+            steps {
+                archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true, allowEmptyArchive: false
+                echo "¡Compilación exitosa! Los archivos .jar están listos para descargar desde la vista de la tarea en Jenkins."
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "Error en la compilación del plugin REST. Revisa la consola de Maven."
+        }
+    }
+}
+```
+
+### 9.4. Despliegue en Caliente en Dokploy vía Apache Felix Web Console
+
+Una vez generado y archivado el archivo `.jar` (ej. `com.trekglobal.idempiere.rest.api-*.jar`), se despliega en el servidor sin reiniciar el contenedor:
+
+1. **Acceso a la Consola OSGi:**
+   - URL: `https://<dominio-lunaerp-dokploy>/osgi/system/console/bundles`
+   - Credenciales HTTP Auth: Usuario `SuperUser`, Contraseña de la instancia (por defecto `System`).
+2. **Subida del Bundle:**
+   - Clic en **Install/Update...**
+   - Seleccionar el archivo `.jar` descargado desde Jenkins.
+   - Marcar la casilla **Start Bundle**.
+   - Asignar **Start Level** = `4`.
+   - Clic en **Install or Update**.
+3. **Validación:**
+   - En la lista de bundles, verificar que `com.trekglobal.idempiere.rest.api` esté en estado **Active**.
+   - Probar el endpoint OpenAPI en el navegador:
+     `https://<dominio-lunaerp-dokploy>/api/v1/openapi.json`
+
+
